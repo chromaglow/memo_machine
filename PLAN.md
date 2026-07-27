@@ -15,7 +15,7 @@
 
 | # | Module | Description | Depends on | Status |
 |---|--------|-------------|------------|--------|
-| 1 | Toolchain setup | Install libimobiledevice on Windows; verify device pairing (`ideviceinfo`). Manual/one-time, no code. | — | in progress |
+| 1 | Toolchain setup | Install libimobiledevice on Windows; verify device pairing (`ideviceinfo`). Manual/one-time, no code. | — | binaries installed; pairing pending |
 | 2 | Phase 0 gate | Pull one memo via backup, run `phase0_check_tsrp.py`. Go/no-go for the architecture. | 1 | script ready |
 | 3 | Backup extractor | `idevicebackup2` wrapper + `Manifest.db` query → `originals/` + `CloudRecordings.db`, real filenames restored. Domain discovered at runtime; prompt on encrypted backup. | 2 | — |
 | 4 | Metadata reader | `CloudRecordings.db` reader: `PRAGMA` introspection, Core Data epoch (+978307200), `date_source` fallback chain (db → m4a → mtime → unknown). | 3* | — |
@@ -32,6 +32,12 @@
 - Each module independently testable; no hidden state between modules
 - Checkpoints report: independently functional? / limitations & TODOs / ready for integration?
 - Originals immutable; everything hash-keyed and idempotent; fail loud, continue anyway
+
+## Environment
+
+- libimobiledevice v1.2.1-r1122 (win-x64) → `C:\Users\ezras\tools\libimobiledevice`, on user PATH
+- Apple Mobile Device Service: running
+- Python 3.13.3
 
 ## Non-negotiables (from spec §4)
 
