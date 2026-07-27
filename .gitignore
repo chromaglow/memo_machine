@@ -1,0 +1,16 @@
+# Personal audio/transcript data never goes to GitHub — code only
+originals/
+transcripts/
+enriched/
+archive/
+backup/
+index.csv
+index.xlsx
+*.m4a
+CloudRecordings.db
+Manifest.db
+
+__pycache__/
+*.pyc
+.venv/
+.env
