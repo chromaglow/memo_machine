@@ -11,6 +11,7 @@ Exit codes: 0 = atom found with extractable text, 1 = atom found but no text,
 2 = no atom, 3 = usage/IO error.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -45,21 +46,40 @@ def walk_boxes(data: bytes, start: int, end: int, depth: int = 0):
         pos += size
 
 
-def extract_text(payload: bytes) -> str:
-    """Pull printable UTF-8 runs out of an unknown binary payload."""
-    runs, current = [], bytearray()
-    text = payload.decode("utf-8", errors="replace")
-    for ch in text:
-        if ch.isprintable() or ch in "\n ":
-            current += ch.encode("utf-8")
-        else:
-            if len(current) >= 4:
-                runs.append(current.decode("utf-8"))
-            current = bytearray()
-    if len(current) >= 4:
-        runs.append(current.decode("utf-8"))
-    # The transcript is by far the longest readable run; join the substantial ones.
-    return " ".join(r.strip() for r in runs if len(r) >= 12)
+def parse_tsrp(payload: bytes):
+    """Decode a tsrp payload into (text, word_timings).
+
+    The payload is JSON:
+        {"locale": {...},
+         "attributedString": {"runs": [tok, idx, tok, idx, ...],
+                              "attributeTable": [{"timeRange": [start, end]}, ...]}}
+
+    `runs` alternates a text token with an index into `attributeTable`, so the
+    transcript carries per-word timings. An untranscribed recording still gets a
+    tsrp atom, but with `attributedString` as an empty string — atom presence
+    alone is NOT evidence of a transcript.
+    """
+    obj = json.loads(payload.decode("utf-8", errors="replace"))
+    attributed = obj.get("attributedString")
+
+    if isinstance(attributed, str):  # empty / untranscribed
+        return attributed, []
+    if not isinstance(attributed, dict):
+        return "", []
+
+    runs = attributed.get("runs", [])
+    table = attributed.get("attributeTable", [])
+    tokens = [x for x in runs if isinstance(x, str)]
+
+    timings = []
+    for i in range(0, len(runs) - 1, 2):
+        tok, idx = runs[i], runs[i + 1]
+        if isinstance(tok, str) and isinstance(idx, int) and 0 <= idx < len(table):
+            span = table[idx].get("timeRange")
+            if span:
+                timings.append((tok, span[0], span[1]))
+
+    return "".join(tokens), timings
 
 
 def main() -> int:
@@ -98,12 +118,19 @@ def main() -> int:
 
     start, endpos = tsrp_spans[0]
     print(f"\ntsrp atom present: {endpos - start:,} byte payload")
-    text = extract_text(data[start:endpos])
-    if not text:
-        print("RESULT: PARTIAL — atom present but no readable text extracted.")
+    try:
+        text, timings = parse_tsrp(data[start:endpos])
+    except Exception as exc:
+        print(f"RESULT: PARTIAL — atom present but payload did not parse: {exc}")
         return 1
 
-    print(f"Extracted ~{len(text):,} chars of text. First 200:\n")
+    if not text.strip():
+        print("RESULT: PARTIAL — atom present but transcript is empty.")
+        print("The recording was never transcribed on-device. Remedy: open it once")
+        print("in the Voice Memos app to trigger transcription, then re-export.")
+        return 1
+
+    print(f"Extracted {len(text):,} chars, {len(timings):,} word timings. First 200:\n")
     print(text[:200])
     print("\nRESULT: PASS — transcript survived the transfer.")
     return 0
