@@ -1,62 +1,183 @@
 # Memo Machine
 
-A pipeline that turns a phone full of iPhone voice memos into a durable, searchable archive — so the phone can be wiped clean.
+Turns a phone full of iPhone voice memos into a durable, searchable archive — so the phone can be wiped clean.
 
-## What it produces
+**Status: complete.** 243 recordings, 131.7 hours, extracted, transcribed, enriched, renamed and sorted.
 
-1. **`archive/`** — renamed copies of every recording, named so the filename says what it is:
-   `2026-03-14_1430_meeting_roadmap-sync_josh-aaron.m4a`
-2. **`index.csv` / `index.xlsx`** — one row per recording: date, duration, category, title, topic, summary, participants, action items. The spreadsheet is the real product; the renamed files exist so it can point at something findable.
+| | |
+|---|---|
+| Recordings | 243 (32.34 GB) |
+| Transcripts | 213 — 211 free from the audio files, 2 via local Whisper |
+| Enrichment cost | **$7.55** total |
+| Verification | every file SHA-256 checked against the phone backup |
 
-## How it works
+---
 
-The architectural unlock: **Apple's on-device transcription embeds the transcript inside the `.m4a` file itself**, in an MPEG-4 atom named `tsrp`. No Whisper, no transcription API, no audio ever uploaded — transcription is a file read. A SQLite database (`CloudRecordings.db`) that ships alongside the recordings supplies true creation dates, titles, and durations.
+## The architectural unlock
 
-Pipeline stages, each with intermediate artifacts on disk so any stage re-runs independently:
+**Apple's Voice Memos app writes its on-device transcript into the `.m4a`/`.qta` file itself.** No Whisper, no transcription API, no per-minute cost, and the audio never leaves the machine. 5.8M characters of transcript came out of the files in **0.9 seconds**.
 
-| Phase | What | Output |
-|---|---|---|
-| 0 | Verify the `tsrp` atom survives the transfer off the phone | go / no-go |
-| 1 | Extract files from a device backup via libimobiledevice | `originals/` + `CloudRecordings.db` |
-| 2 | Read metadata from `CloudRecordings.db` | dates, titles, durations |
-| 3 | Pull transcripts from the `tsrp` atoms | `transcripts/<hash>.txt` |
-| 4 | Enrich each transcript with one Claude API call | `enriched/<hash>.json` |
-| 5 | Write the spreadsheet, then rename copies into `archive/` | `index.csv`, `index.xlsx`, `archive/` |
+The payload is JSON carrying word-level timestamps:
+
+```json
+{"locale": {...},
+ "attributedString": {"runs": ["And", 0, " probably", 1, ...],
+                      "attributeTable": [{"timeRange": [0, 1.98]}, ...]}}
+```
+
+`runs` alternates a text token with an index into `attributeTable` — 1.1M word timings across the corpus, enough to build jump-to-position search later.
+
+### Three traps that cost real time
+
+1. **iOS 26 records to `.qta`, not `.m4a`.** Filtering on `.m4a` finds 13% of a modern library. The 211 `.qta` files were the bulk of it.
+2. **The two formats store the transcript in completely different places.**
+   ```
+   .m4a   moov > trak > udta > tsrp                     → raw JSON
+   .qta   moov > trak > meta > keys → "com.apple.VoiceMemos.tsrp"
+                             > ilst → item N > data     → same JSON
+   ```
+3. **QuickTime `meta` is a plain container; ISO-BMFF `meta` is a full box** with 4 leading version/flags bytes. Skipping those unconditionally desyncs every `.qta` parse and the transcript vanishes silently.
+
+Two more worth knowing: a file has **more than one `meta` box** (the real one under `trak`, a decorative one under `udta`) so `keys`/`ilst` must be paired within the same box; and an untranscribed recording still carries a `tsrp` payload with an empty string — **atom presence is not evidence of a transcript**.
+
+Metadata lives in a ~2 MB `moov` box while audio runs to 276 MB per file, so the parser seeks to `moov` instead of reading whole files. Full 243-file scan: **0.9 s** instead of 32 GB of I/O.
+
+---
+
+## Pipeline
+
+| Script | What it does |
+|---|---|
+| `phase0_check_tsrp.py` | Verifies a file carries a real transcript. The go/no-go gate. |
+| `extract_recordings.py` | Pulls recordings out of an `idevicebackup2` backup, restoring real filenames from `Manifest.db`. Hashes both sides before reporting success. |
+| `extract_transcripts.py` | Writes one transcript per recording from whichever source has it. |
+| `whisper_fallback.py` | Local Whisper for recordings Apple never transcribed. Deliberately outside the main path. |
+| `build_library.py` | Assembles audio beside transcript in one browsable folder, hard-linked so it costs no extra disk. |
+| `enrich.py` | One Claude call per transcript → structured metadata. Batch API, hash-keyed cache. |
+| `build_index.py` | Builds `index.csv` / `index.xlsx` and renames the archive. |
+| `classify_topic.py` | Sorts recordings into topic subfolders from their summaries. |
+
+Every stage is idempotent and keyed on the audio file's SHA-256, so re-running never duplicates work or re-spends on API calls.
+
+---
 
 ## Ground rules
 
-- **Originals are immutable** — renaming produces copies, never touches `originals/`
-- **Idempotent** — everything keyed on file hash; re-runs never duplicate work or re-spend API calls
-- **Fail loud, continue anyway** — one corrupt file never kills a run
-- **Inferred fields carry confidence markers** — DB dates are facts, guessed participants are not, and the spreadsheet shows the difference
-- **Nothing is ever deleted from the phone** — wiping is a separate, manual, deliberate act after the archive is verified
+- **Originals are immutable.** `originals/` holds the byte-for-byte copies and is never renamed or moved. Everything else is hard links.
+- **Fail loud, continue anyway.** One corrupt file never kills a run.
+- **Nothing is ever deleted from the phone by this tool.**
+- **Inferred fields carry confidence markers** — and the participants rule below has teeth, not just a label.
 
-## Status
+---
 
-Phase 0. See [voice-memo-archive-spec.md](voice-memo-archive-spec.md) for the full build spec.
+## The participants rule
 
-### Decisions (locked 2026-07-27)
+Transcription gives words, not identities. This is the field most likely to be quietly wrong, so it is enforced mechanically rather than requested politely.
 
-- **Mix:** mostly meetings/calls → category field stays; enrichment emphasizes participants and action items
-- **Extraction:** libimobiledevice only (scriptable from day one, no iMazing)
-- **Naming:** participants segment included in filenames (first two names, then `-etal`; omitted for notes-to-self)
-- **Spreadsheet:** CSV as source of truth, XLSX generated from it
-- **Participant inference:** conservative — a name goes in only on direct transcript evidence (spoken address, self-intro, sign-off); otherwise `none`, never a plausible guess
+A first pass listed five names for one recording at "low" confidence — including the archive owner, a third party never on the call, and a name the model itself flagged as a probable mistranscription. Hedging with a confidence field doesn't help; the name still reaches the spreadsheet as something to catch.
 
-## Phase 0 — verify the transcript survives
+Three layers now stand between a guess and the spreadsheet:
+
+1. **Every name must carry a verbatim quote** proving the person was present — addressed by name, self-introducing, or signing off. The model cannot fill the field without producing a quote.
+2. **`verify_participants()` checks each quote against the transcript.** Four names were dropped because their evidence could not be found.
+3. **The owner is filtered deterministically.** People address him by name constantly, so his quotes are genuine and pass step 2 — the rule has to live in code.
+
+Result across 213 recordings: **114 with evidenced names, 101 correctly returning `none`.** A blank cell means nobody could be evidenced, not that nobody was there.
+
+---
+
+## Output
 
 ```
-python phase0_check_tsrp.py path\to\memo.m4a
+C:\Users\ezras\memo-machine-data\
+├── library\              audio + transcript side by side, sorted by topic
+│   ├── amazon\           82   Amazon employment
+│   ├── qed\              66   QED venture — Josh, Aaron, Hard Shell
+│   ├── techland\         20   Techland / Geode — Charlie
+│   └── (root)            75   everything else
+├── originals\           243   immutable, phone filenames
+├── transcripts\         213   text + word timings
+├── enriched\            213   structured metadata, one JSON per recording
+├── index.csv                  source of truth
+├── index.xlsx                 formatted, with an About sheet
+└── inventory.csv              every file + SHA-256
 ```
 
-Walks the MPEG-4 atom tree, reports whether a `tsrp` atom is present, and prints the first 200 characters of extractable transcript text.
+Filenames follow `YYYY-MM-DD_HHMM_category_slug_participants.ext`:
 
-- **Pass:** transcript comes out → proceed to Phase 1.
-- **Fail:** the transfer re-encoded the file and stripped the atom → change the transfer method, not the architecture. Backup-based extraction copies byte-for-byte and is most likely to preserve it. (A missing atom on a pre-iOS 18 recording, or one never opened in the Voice Memos app, is a per-file issue, not an architecture failure.)
+```
+2025-10-20_1530_call_aht-bands-pilot-data-review_charlie.qta
+2026-07-07_1517_meeting_qed-board-meeting-july-7_josh-aaron-etal.qta
+```
+
+Date first so the folder sorts chronologically; participants omitted when nothing was evidenced; capped at 100 characters, with length recovered from the slug rather than the date.
+
+---
+
+## Topic sorting
+
+Keyword matching does not work for this. "Amazon" appears in 89 transcripts, but one is *"I just found it on Amazon"* about a book and another is a job interview at a **medical device company** where Amazon comes up 21 times as a former employer. Both would land in the folder.
+
+`classify_topic.py` classifies from the generated title/topic/summary instead — what a recording is *about*, not which words it contains. Cheap, because those are two sentences rather than a 40,000-character transcript.
+
+Three lessons are baked into the tool:
+
+- **The topic definition is the thing that gets refined.** The first Amazon pass missed two internal AI-governance training sessions because the definition enumerated AHT and promo work and never said *training*. The model followed the spec correctly; the spec was incomplete.
+- **A recording can belong to two topics.** Whichever folder claims it first keeps it, and the overlap is reported rather than silently counted as moved. `--reclaim` lets a narrower topic take files back from a broader one — Techland reclaimed 19 recordings that the venture pass had swept into `qed/`.
+- **`--min-confidence` protects confident placements.** Three recordings scored *low* for Techland while already sitting in `qed/` at *high* confidence; moving them would have traded a confident placement for an unconfident one.
+
+The same person can span topics: Charlie appears both as an Amazon colleague and as the Techland Ventures partner, which is exactly why name matching fails and topic classification works.
+
+---
+
+## Enrichment
+
+One Claude call per transcript via the **Batch API** (50% off), returning schema-constrained JSON: title, slug, category, topic, summary, participants with evidence, action items, flags.
+
+| | |
+|---|---|
+| Input tokens | 2,227,559 |
+| Output tokens | 158,250 |
+| Succeeded | 213 / 213 |
+| Wall clock | under 2 minutes |
+| **Cost** | **$7.55** |
+
+Chunking turned out to be unnecessary — the longest transcript is ~24k tokens against a 1M-token context window.
+
+The `flags` column earns its place: it caught personal contact details spoken aloud, health disclosures, layoff speculation, recordings that are mostly silence, and systematic transcription garbling ("ABS" for AWS, "Blue Crawlers" for Glue Crawlers).
+
+---
+
+## Local Whisper fallback
+
+Two long recordings Apple never transcribed were run locally on an RTX 4080 SUPER. Getting them right took four attempts, and the tuning inverted two pieces of standard advice:
+
+- **VAD plus raw levels lost real speech** on a 67%-silent, -42.7 dB room recording. Only no-VAD *combined with* loudness normalization helped (+36% on an A/B slice); either change alone did nothing or hurt.
+- **The usual `compression_ratio > 2.4` hallucination filter catches none of these.** Dumping 404 segments with their statistics showed the hallucinations are *short* stock phrases that compress poorly and score **low** — median 0.56 against 1.48 for real speech. Filtering `cr < 0.7 AND nsp > 0.8` removes 81% of them for a 3% cost in genuine segments. `avg_logprob` does not discriminate at all, and filtering on it was destroying real quiet speech.
+- `condition_on_previous_text=False` stops one invented "Thank you." from breeding a hundred more.
+
+Net on the quiet file: **5,136 → 11,822 characters**, hallucinated "Thank you." from **101 → 3**.
+
+---
 
 ## Requirements
 
-- Windows (primary); pipeline portable to Linux
-- Python 3.11+
-- [libimobiledevice](https://libimobiledevice.org/) (`idevicebackup2`) for extraction
-- `anthropic` SDK for enrichment, `openpyxl` for the XLSX view
+- Windows (pipeline portable to Linux) · Python 3.11+
+- [libimobiledevice](https://libimobiledevice.org/) for extraction
+- `anthropic`, `openpyxl` · ffmpeg + `faster-whisper` only for the fallback
+- `ANTHROPIC_API_KEY` in the environment
+
+## Running it again
+
+```bash
+python extract_recordings.py          # backup → originals/, hash-verified
+python extract_transcripts.py         # → transcripts/
+python build_library.py               # → library/
+python enrich.py --sample 3           # eyeball quality first
+python enrich.py --submit             # batch, 50% off
+python enrich.py --collect <batch_id>
+python build_index.py --rename        # index + rename
+python classify_topic.py --topic amazon --folder amazon --move
+```
+
+Dry run is the default for anything that touches files. Cached results mean a re-run costs nothing for work already done.

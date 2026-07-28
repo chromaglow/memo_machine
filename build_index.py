@@ -33,7 +33,52 @@ MAX_PARTICIPANTS_IN_NAME = 2
 COLUMNS = [
     "date", "time", "date_source", "duration", "category", "title", "topic",
     "summary", "participants", "participants_confidence", "action_items",
-    "original_filename", "archive_filename", "has_transcript", "flags", "file_hash",
+    "folder", "original_filename", "archive_filename", "has_transcript",
+    "flags", "file_hash",
+]
+
+COLUMN_NOTES = [
+    ("date / time", "When the recording was made, from CloudRecordings.db on the phone."),
+    ("date_source", "Where the date came from: 'db' is the phone's own database. "
+                    "All 243 came from there — none fell back to file timestamps."),
+    ("duration", "Length of the audio, mm:ss."),
+    ("category", "meeting, call, note-to-self, idea or other. Assigned by Claude."),
+    ("title", "Short descriptive title written by Claude from the transcript."),
+    ("topic", "One sentence on what the recording is about."),
+    ("summary", "Two to four sentences. Written only from what is actually in the "
+                "transcript — thin recordings get short summaries rather than padding."),
+    ("participants", "Only people with direct spoken evidence of being present — "
+                     "addressed by name, introducing themselves, or signing off. "
+                     "Blank means nobody could be evidenced, NOT that nobody was there. "
+                     "Names merely discussed appear in flags instead. You are never "
+                     "listed, since you are in every recording."),
+    ("participants_confidence", "high / medium / low / none. 'none' accompanies a "
+                                "blank participants cell."),
+    ("action_items", "Commitments actually stated in the recording. One per line."),
+    ("folder", "Which subfolder of library/ the files are in now."),
+    ("original_filename", "The name the phone gave it."),
+    ("archive_filename", "The renamed file. Audio and transcript share this name."),
+    ("has_transcript", "yes / no. 30 recordings have no transcript — mostly "
+                       "sub-60-second fragments."),
+    ("flags", "Anything worth a human look: transcription garbling, names that "
+              "could not be verified, sensitive content, recordings that are "
+              "mostly silence."),
+    ("file_hash", "SHA-256 of the audio, verified against the phone backup. This "
+                  "is the stable identifier — it survives renaming and moving."),
+]
+
+FOLDER_NOTES = [
+    ("amazon", "Work at Amazon: the AHT/handle-time project, MFI cases, AIS, "
+               "Paragon, concurrency rollouts, org and layoff matters, promotion "
+               "and TPM-track mentorship, internal interviews, internal training."),
+    ("qed", "The QED venture with Josh and Aaron: incorporation and C-corp "
+            "formation, Hard Shell, Scout, Omega, Stream Kinetics, and client work "
+            "including DADS, United Way, Seattle Unity, Endo DNA and church software."),
+    ("techland", "Techland Ventures and Geode Solutions, run with Charlie: PMO "
+                 "syncs, deal pipeline, JLL and data-centre clusters, geothermal "
+                 "and ag-tech, Shreveport, Vietnam, Japan/JETRO, Asana rollout."),
+    ("(root)", "Everything else — personal conversations, one-off calls, and "
+               "recordings with no transcript."),
 ]
 
 
@@ -71,6 +116,13 @@ def build_filename(row: dict, names: list, extension: str) -> str:
         room = MAX_FILENAME - len(fixed) - len(tail) - 1
     slug = slug[:max(room, 1)].rstrip("-")
     return f"{fixed}_{slug}{tail}"
+
+
+def locate(library: Path, name: str):
+    """Find a file in library/, whether at the root or inside a topic subfolder."""
+    if (library / name).exists():
+        return library / name
+    return next((p for p in library.glob(f"*/{name}")), None)
 
 
 def load(data: Path):
@@ -151,6 +203,20 @@ def assign_names(rows: list) -> None:
         taken.add(candidate.lower())
 
 
+def assign_folders(data: Path, rows: list) -> None:
+    """Record which topic subfolder each recording currently lives in."""
+    library = data / "library"
+    for row in rows:
+        name = row["archive_filename"] or row["original_filename"]
+        found = locate(library, name)
+        if found is None:
+            row["folder"] = "(missing)"
+        elif found.parent == library:
+            row["folder"] = ""
+        else:
+            row["folder"] = found.parent.name
+
+
 def write_csv(data: Path, rows: list) -> Path:
     path = data / "index.csv"
     with open(path, "w", newline="", encoding="utf-8-sig") as fh:
@@ -168,7 +234,7 @@ def write_xlsx(data: Path, rows: list) -> Path:
     widths = {"date": 11, "time": 7, "date_source": 12, "duration": 9,
               "category": 13, "title": 42, "topic": 55, "summary": 80,
               "participants": 22, "participants_confidence": 12,
-              "action_items": 70, "original_filename": 30,
+              "action_items": 70, "folder": 11, "original_filename": 30,
               "archive_filename": 52, "has_transcript": 8, "flags": 70,
               "file_hash": 18}
 
@@ -195,9 +261,94 @@ def write_xlsx(data: Path, rows: list) -> Path:
             for cell in ws[letter][1:]:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
 
+    write_about_sheet(wb, rows)
     path = data / "index.xlsx"
     wb.save(path)
     return path
+
+
+def write_about_sheet(wb, rows: list) -> None:
+    """A second sheet explaining where the data came from and how to read it."""
+    from openpyxl.styles import Alignment, Font
+
+    import collections
+    ws = wb.create_sheet("About")
+    title_font = Font(bold=True, size=14)
+    head_font = Font(bold=True, size=11, color="1F3864")
+
+    def add(text="", font=None, wrap=False):
+        ws.append([text])
+        cell = ws.cell(row=ws.max_row, column=1)
+        if font:
+            cell.font = font
+        if wrap:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+        return ws.max_row
+
+    def add_pair(left, right):
+        ws.append([left, right])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+        ws.cell(row=ws.max_row, column=1).alignment = Alignment(vertical="top")
+        ws.cell(row=ws.max_row, column=2).alignment = Alignment(
+            wrap_text=True, vertical="top")
+
+    total = len(rows)
+    enriched = sum(1 for r in rows if r["_enriched"])
+    hours = sum(int(r["duration"].split(":")[0]) for r in rows) / 60
+    folders = collections.Counter(r["folder"] or "(root)" for r in rows)
+
+    add("Voice Memo Archive", title_font)
+    add()
+    add(f"{total} recordings taken off an iPhone, roughly {hours:.0f} hours of audio. "
+        f"{enriched} have transcripts and structured metadata; the remaining "
+        f"{total - enriched} are mostly sub-60-second fragments with no usable speech.",
+        wrap=True)
+    add()
+
+    add("Where the transcripts came from", head_font)
+    add("Apple's Voice Memos app stores its on-device transcript inside the audio "
+        "file itself. 211 recordings had one and it was read straight out of the "
+        "file — no transcription service, no cost, and the audio never left the "
+        "machine. Two long recordings Apple had never transcribed were run through "
+        "Whisper locally. The rest have no transcript.", wrap=True)
+    add()
+
+    add("How to read the participants column", head_font)
+    add("This is the column most likely to mislead, so it was built to be "
+        "conservative. A name appears only when the transcript contains direct "
+        "spoken evidence that the person was present — addressed by name, "
+        "introducing themselves, or signing off — and every name had to come with "
+        "a verbatim quote, which was then checked against the transcript. Four "
+        "names were dropped because their quote could not be found. A blank cell "
+        "means nobody could be evidenced, not that nobody was there. Names that "
+        "were merely discussed appear in flags instead.", wrap=True)
+    add()
+
+    add("Folders", head_font)
+    for name, description in FOLDER_NOTES:
+        count = folders.get(name if name != "(root)" else "(root)", 0)
+        add_pair(f"{name}  ({count})", description)
+    add()
+
+    add("Columns", head_font)
+    for name, description in COLUMN_NOTES:
+        add_pair(name, description)
+    add()
+
+    add("Caveats worth knowing", head_font)
+    add("Transcripts contain recognition errors, especially on proper nouns and "
+        "acronyms — 'AWS' as 'ABS', 'Glue Crawlers' as 'Blue Crawlers'. Summaries "
+        "read through those errors where the intent is clear and flag them where "
+        "it is not. Categories and titles are judgments, not facts. The date, "
+        "duration and file hash are the only fields taken directly from the phone.",
+        wrap=True)
+
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 105
+    for row in ws.iter_rows(min_col=1, max_col=1):
+        for cell in row:
+            if cell.alignment.wrap_text:
+                ws.row_dimensions[cell.row].height = None
 
 
 def do_rename(data: Path, rows: list, apply: bool) -> int:
@@ -208,24 +359,26 @@ def do_rename(data: Path, rows: list, apply: bool) -> int:
         if not row["_enriched"]:
             skipped += 1
             continue
-        src = library / row["original_filename"]
-        dst = library / row["archive_filename"]
-        if src.name == dst.name:
+        if row["archive_filename"] == row["original_filename"]:
             continue
-        if not src.exists():
-            if dst.exists():
-                continue          # already renamed by an earlier run
-            print(f"  MISSING: {src.name}")
+        # Files may have been sorted into topic subfolders since the last run;
+        # rename them where they sit rather than assuming the library root.
+        if locate(library, row["archive_filename"]) is not None:
+            continue              # already renamed by an earlier run
+        src = locate(library, row["original_filename"])
+        if src is None:
+            print(f"  MISSING: {row['original_filename']}")
             failed += 1
             continue
+        dst = src.parent / row["archive_filename"]
         if not apply:
             renamed += 1
             continue
         try:
             src.rename(dst)
-            txt = library / (Path(row["original_filename"]).stem + ".txt")
+            txt = src.parent / (Path(row["original_filename"]).stem + ".txt")
             if txt.exists():
-                txt.rename(library / (Path(row["archive_filename"]).stem + ".txt"))
+                txt.rename(src.parent / (Path(row["archive_filename"]).stem + ".txt"))
             renamed += 1
         except Exception as exc:
             print(f"  FAILED {src.name}: {exc}")
@@ -244,8 +397,12 @@ def main() -> int:
 
     rows = load(args.data)
     assign_names(rows)
+    assign_folders(args.data, rows)
     print(f"recordings: {len(rows)}  "
           f"(enriched {sum(1 for r in rows if r['_enriched'])})")
+    import collections as _c
+    for folder, n in sorted(_c.Counter(r["folder"] or "(root)" for r in rows).items()):
+        print(f"    {folder:<12} {n}")
 
     # Index first: a rename failure must never leave the sheet describing
     # filenames that were never created.
