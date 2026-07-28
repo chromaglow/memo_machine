@@ -68,7 +68,31 @@ TOPICS = {
             "Work belonging to the owner's Amazon employment (AHT, MFI, AIS, "
             "Paragon, associates, promotion and org matters), interviews for "
             "jobs at other companies, and purely personal or social conversations "
-            "with no business content."
+            "with no business content. Also exclude the separate Techland "
+            "Ventures / Geode Solutions business run with Charlie."
+        ),
+    },
+    "techland": {
+        "include": (
+            "The recording concerns Techland Ventures or Geode Solutions — the "
+            "advisory and PMO business the owner runs with Charlie. Transcription "
+            "renders the name inconsistently as Techland, TechLine, Tech Land or "
+            "Tech Line; treat them all as the same company. The subject matter "
+            "includes PMO syncs and triage, the deal pipeline and prospecting, "
+            "JLL, DCC and data-centre cluster deals, geothermal and ag-tech "
+            "verticals, a manufacturing OS, Shreveport, Vietnam, Japan/JETRO and "
+            "Netherlands business travel, entity structuring for Techland or "
+            "Geode, Asana build-out for that PMO, pitch packages and capital "
+            "channels, the black-box AI tool, Geode platform and operating-model "
+            "work, and weekly 1:1s or strategy sessions with Charlie about any of "
+            "the above."
+        ),
+        "exclude": (
+            "Charlie in his Amazon capacity — AHT, RPH, MFI, AIS, Paragon, "
+            "concurrency, associates, queues, Amazon layoffs and promotion talk. "
+            "Also exclude the owner's separate QED venture with Josh and Aaron "
+            "(Hard Shell, Stream Kinetics, Scout, Seattle Unity, United Way, "
+            "DADS, church software), and purely personal conversations."
         ),
     },
 }
@@ -146,6 +170,11 @@ def main() -> int:
     ap.add_argument("--topic", required=True, choices=sorted(TOPICS))
     ap.add_argument("--folder", required=True, help="subfolder name under library/")
     ap.add_argument("--move", action="store_true", help="actually move the files")
+    ap.add_argument("--reclaim", nargs="*", default=[], metavar="FOLDER",
+                    help="topic folders this run may take files back out of, when "
+                         "an earlier, broader topic claimed them first")
+    ap.add_argument("--min-confidence", choices=["high", "medium", "low"], default="low",
+                    help="skip matches below this confidence (default: keep all)")
     args = ap.parse_args()
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -182,6 +211,20 @@ def main() -> int:
             print(f"  {names.get(row['_hash'], row['_stem'])[:70]}")
             print(f"      {v['reason']}")
 
+    # A weak match can be wrong in a way that matters: the recording may already
+    # sit in another topic folder that scored it highly, and moving it on a low
+    # signal downgrades a confident placement to an unconfident one.
+    rank = {"high": 3, "medium": 2, "low": 1}
+    floor = rank[args.min_confidence]
+    if floor > 1:
+        skipped = [h for h in hits if rank[h[2]["confidence"]] < floor]
+        hits = [h for h in hits if rank[h[2]["confidence"]] >= floor]
+        if skipped:
+            print(f"\nbelow --min-confidence {args.min_confidence}, left in place "
+                  f"({len(skipped)}):")
+            for i, row, v in skipped:
+                print(f"  {names.get(row['_hash'], row['_stem'])[:66]}")
+
     dest = data / "library" / args.folder
     if not args.move:
         print(f"\ndry run — nothing moved. Add --move to move {len(hits)} "
@@ -190,26 +233,39 @@ def main() -> int:
 
     dest.mkdir(parents=True, exist_ok=True)
     library = data / "library"
-    moved, elsewhere, missing = 0, [], []
+    moved, reclaimed, elsewhere, missing = 0, [], [], []
     for _, row, _v in hits:
         name = names.get(row["_hash"])
         if not name:
             continue
-        if not (library / name).exists():
-            # A recording can belong to more than one topic. Whichever folder
-            # claimed it first keeps it — report rather than silently counting
-            # it as moved.
+
+        # A recording can belong to more than one topic. By default whichever
+        # folder claimed it first keeps it, and we report rather than silently
+        # counting it as moved. --reclaim names the folders a narrower topic is
+        # allowed to take files back out of.
+        source = library if (library / name).exists() else None
+        if source is None:
             found = next((p for p in library.glob(f"*/{name}")), None)
-            (elsewhere if found else missing).append(
-                f"{name}  (in {found.parent.name}/)" if found else name)
-            continue
+            if found is None:
+                missing.append(name)
+                continue
+            if found.parent.name not in args.reclaim:
+                elsewhere.append(f"{name}  (in {found.parent.name}/)")
+                continue
+            source = found.parent
+            reclaimed.append(f"{name}  (from {found.parent.name}/)")
+
         for candidate in (name, Path(name).stem + ".txt"):
-            src = library / candidate
+            src = source / candidate
             if src.exists():
                 shutil.move(str(src), str(dest / candidate))
         moved += 1
 
     print(f"\nmoved {moved} recordings (audio + transcript) into library/{args.folder}/")
+    if reclaimed:
+        print(f"reclaimed from another topic folder ({len(reclaimed)}):")
+        for n in reclaimed:
+            print(f"  {n}")
     if elsewhere:
         print(f"already filed under another topic, left in place ({len(elsewhere)}):")
         for n in elsewhere:
