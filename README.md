@@ -11,6 +11,8 @@ Turns a phone full of iPhone voice memos into a durable, searchable archive — 
 | Enrichment cost | **$7.55** total |
 | Verification | every file SHA-256 checked against the phone backup |
 
+**Further reading:** [CHANGELOG.md](CHANGELOG.md) for the chronological record and the corrections along the way · [HANDOFF.md](HANDOFF.md) for operating it, the traps, and the quarterly repeat · [PLAN.md](PLAN.md) for the original plan with outcomes recorded against it · [voice-memo-archive-spec.md](voice-memo-archive-spec.md) for the spec this started from.
+
 ---
 
 ## The architectural unlock

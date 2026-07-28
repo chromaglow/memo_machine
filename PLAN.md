@@ -1,7 +1,24 @@
 # Memo Machine — Build Plan
 
-**Confirmed:** 2026-07-27 · **Detail level:** medium (default; not specified)
+**Confirmed:** 2026-07-27 · **Completed:** 2026-07-28 · **Detail level:** medium
 **Spec:** [voice-memo-archive-spec.md](voice-memo-archive-spec.md)
+
+> **All modules complete.** This document is kept as the original plan with
+> outcomes recorded against it — including where the plan was wrong. For what
+> was built and why, see [README.md](README.md); for the chronological record
+> and the corrections, [CHANGELOG.md](CHANGELOG.md); for operating it,
+> [HANDOFF.md](HANDOFF.md).
+>
+> Two planned modules were **not** built, deliberately:
+> - **Module 4** was absorbed into Module 3 rather than written separately — the
+>   metadata read is a dozen lines and splitting it would have been ceremony.
+> - **Module 8** (orchestrator CLI) was dropped. Each stage is already idempotent
+>   and hash-keyed, so the "orchestrator" is eight lines of shell in HANDOFF.md.
+>   A wrapper would have added a layer without removing a decision.
+>
+> Three modules were added that the plan did not anticipate: the Whisper
+> fallback, topic sorting (`classify_topic.py`), and the HTML browser
+> (`build_browser.py`).
 
 ## Locked decisions
 
@@ -18,13 +35,23 @@
 | 1 | Toolchain setup | Install libimobiledevice on Windows; verify device pairing (`ideviceinfo`). Manual/one-time, no code. | — | **done** |
 | 2 | Phase 0 gate | Pull one memo via backup, run `phase0_check_tsrp.py`. Go/no-go for the architecture. | 1 | **done — PASS** |
 | 3 | Backup extractor | `idevicebackup2` wrapper + `Manifest.db` query → `originals/` + `CloudRecordings.db`, real filenames restored. Domain discovered at runtime; prompt on encrypted backup. | 2 | **done — 243/243 verified** |
-| 4 | Metadata reader | `CloudRecordings.db` reader: `PRAGMA` introspection, Core Data epoch (+978307200), `date_source` fallback chain (db → m4a → mtime → unknown). | 3* | partly done inside Module 3 |
+| 4 | Metadata reader | `CloudRecordings.db` reader: `PRAGMA` introspection, Core Data epoch (+978307200), `date_source` fallback chain (db → m4a → mtime → unknown). | 3* | **folded into Module 3** |
 | 5 | Transcript extractor | Atom walk per file → `transcripts/<stem>.txt` + `.words.json`; falls back to whisper output; no-payload files → `needs_attention`, never halts. | 3* | **done — 213 transcripts** |
-| 6 | Enricher | One Claude call per transcript → `enriched/<hash>.json`; hash-keyed cache, chunk-with-overlap for long transcripts, retry-once on malformed JSON. | 5 | — |
-| 7 | Output writer | Metadata + enrichment → `index.csv` → `index.xlsx`; then renamed copies into `archive/` (100-char cap, collision suffixes). Rename only rows where enrichment succeeded. | 4, 6 | — |
-| 8 | Orchestrator CLI | Single entrypoint for stages 3–7; resumable hash-keyed state, fail-loud-continue logging. The quarterly re-run command. | 3–7 | — |
+| 6 | Enricher | One Claude call per transcript → `enriched/<hash>.json`; hash-keyed cache, chunk-with-overlap for long transcripts, retry-once on malformed JSON. | 5 | **done — 213/213, $7.55** |
+| 7 | Output writer | Metadata + enrichment → `index.csv` → `index.xlsx`; then renamed copies into `archive/` (100-char cap, collision suffixes). Rename only rows where enrichment succeeded. | 4, 6 | **done — 243 rows, 213 renamed** |
+| 8 | Orchestrator CLI | Single entrypoint for stages 3–7; resumable hash-keyed state, fail-loud-continue logging. The quarterly re-run command. | 3–7 | **dropped — see note above** |
+| + | Whisper fallback | Local transcription for recordings Apple never processed. Not in the original plan. | 5 | **done — 2 recordings** |
+| + | Topic sorting | `classify_topic.py` — sorts the archive into subfolders by subject. Not in the original plan. | 6 | **done — 3 folders** |
+| + | HTML browser | `build_browser.py` — every recording and transcript in one searchable page. Not in the original plan. | 7 | **done — browse.html** |
 
 \* Modules 4–7 are testable in isolation on sample artifacts (one hand-exported memo + DB); they don't hard-block on device setup.
+
+### Where the plan was wrong
+
+- **Chunking was specified and turned out to be unnecessary.** The longest transcript is ~24k tokens against a 1M-token context window. Dropping it removed the most complex part of Module 6 and the accuracy loss that comes with stitching chunk summaries.
+- **The corpus was assumed to be `.m4a`.** 211 of 243 recordings are `.qta`, and the two formats store transcripts in entirely different places.
+- **`ZCUSTOMLABEL` was assumed to be the title.** It holds a UTC ISO timestamp; the title is in `ZENCRYPTEDTITLE`.
+- **A confidence marker was assumed to be enough for participants.** It was not — the rule needed a verbatim quote, a programmatic check of that quote, and a deterministic owner filter.
 
 ## Working agreement (per operating rules)
 
