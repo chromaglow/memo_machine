@@ -29,6 +29,12 @@ DEFAULT_DATA = Path(r"C:\Users\ezras\memo-machine-data")
 MODEL = "claude-opus-5"
 MAX_TOKENS = 2000
 
+# The archive's owner is in every recording, so naming him carries no
+# information. The prompt says not to list him, but people address him by name
+# constantly, which means the quote check passes and the rule slips through.
+# Enforced here instead, where it is deterministic.
+OWNER_NAMES = {"ezra"}
+
 SYSTEM_PROMPT = """\
 You extract structured metadata from voice memo transcripts for a personal archive.
 
@@ -201,6 +207,8 @@ def verify_participants(job: dict, payload: dict) -> dict:
         quote = " ".join((person.get("evidence") or "").lower().split())
         if not name:
             continue
+        if name.lower().split()[0] in OWNER_NAMES:
+            continue  # the owner, not a participant — drop silently
         if quote and quote in haystack:
             kept.append(person)
         else:
@@ -320,6 +328,33 @@ def cmd_collect(client, data: Path, jobs: list, batch_id: str) -> int:
     return 0
 
 
+def cmd_reverify(data: Path, jobs: list) -> int:
+    """Re-apply participant checks to already-collected results, no API calls.
+
+    Lets a tightened rule be enforced against the whole corpus without paying to
+    re-enrich it. Only the participant fields are touched.
+    """
+    by_hash = {j["hash"]: j for j in jobs}
+    changed = 0
+    for path in sorted((data / "enriched").glob("*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        job = by_hash.get(payload.get("_hash"))
+        if job is None:
+            continue
+        before = [p.get("name") for p in payload.get("participants") or []]
+        payload = verify_participants(job, payload)
+        after = [p.get("name") for p in payload.get("participants") or []]
+        if before != after:
+            changed += 1
+            dropped = [n for n in before if n not in after]
+            print(f"  {payload['_stem']}: dropped {dropped}")
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False),
+                        encoding="utf-8")
+    print(f"\nre-verified {len(list((data / 'enriched').glob('*.json')))} records, "
+          f"{changed} changed")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", type=Path, default=DEFAULT_DATA)
@@ -327,14 +362,20 @@ def main() -> int:
     group.add_argument("--sample", type=int, metavar="N")
     group.add_argument("--submit", action="store_true")
     group.add_argument("--collect", metavar="BATCH_ID")
+    group.add_argument("--reverify", action="store_true",
+                       help="re-run participant checks on cached results (no API calls)")
     args = ap.parse_args()
+
+    jobs = load_work(args.data)
+    print(f"{len(jobs)} recordings with transcripts")
+
+    if args.reverify:
+        return cmd_reverify(args.data, jobs)
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY is not set in this process.")
         return 2
 
-    jobs = load_work(args.data)
-    print(f"{len(jobs)} recordings with transcripts")
     client = anthropic.Anthropic()
 
     if args.sample:
