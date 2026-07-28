@@ -84,19 +84,64 @@ Presence is *not* evidence of a transcript — test for non-empty text.
 `load_metadata_region()` seeks to `moov` instead of slurping the file — full 243-file scan
 runs in **0.9 s** rather than reading 32 GB.
 
-### Untranscribed gap: 32 files / 4.32 hours — but only 4 matter
+## Whisper fallback (2026-07-27) — done, 2 files
+
+On-device transcription could not be triggered for these, so `whisper_fallback.py` ran
+large-v3 locally on the RTX 4080 SUPER. Deliberately outside the main pipeline, per spec §8.
+Everything needed was already installed (ffmpeg, faster-whisper, CUDA torch, cached model).
+
+| Title | File | Audio | Result |
+|---|---|---|---|
+| Josh 2 | `20260617 120121.m4a` | 41m 13s | 31,967 chars / 6,095 words |
+| N 73rd St 13 copy | `20260112 074811-74C137FF.qta` | 86m 06s | 11,822 chars / 2,427 words |
+
+Yojin (87m) and China meetings (33m) dropped by Ezra's decision. **Final coverage: 213 / 243.**
+
+### Tuning that mattered — all measured, not assumed
+
+The 86-minute file is a room recording: **67% silence, -42.7 dB mean**. First pass produced
+5,136 chars (~12 wpm) and 17% of it was fabricated. Three separate problems:
+
+1. **VAD + raw levels lost real speech.** A/B on one 5-minute slice: VAD+raw 1,890 chars,
+   no-VAD+raw 1,858, VAD+loudnorm 1,739, **no-VAD+loudnorm 2,576**. Only the combination
+   helps — either change alone does nothing or hurts.
+2. **`condition_on_previous_text` fed hallucinations back as context**, turning one invented
+   "Thank you." into 101 of them, plus 15 of "Thank you for watching." (a training artifact
+   never spoken in the recording).
+3. **The standard confidence filter is aimed the wrong way.** Dumping 404 segments with their
+   statistics showed:
+
+   | statistic | hallucination median | real median | verdict |
+   |---|---|---|---|
+   | `compression_ratio` | 0.56 | 1.48 | strong discriminator |
+   | `no_speech_prob` | 0.89 | 0.79 | weak; useful as a gate |
+   | `avg_logprob` | -0.61 | -0.49 | useless, fully overlapping |
+
+   These hallucinations are *short* stock phrases, so they compress poorly and score **low** —
+   the usual `compression_ratio > 2.4` rule (aimed at long repetitive loops) catches none of
+   them. Filtering `cr < 0.7 AND nsp > 0.8` removes 81% of hallucinated segments for a 3% cost
+   in real ones. Filtering on `avg_logprob` was destroying genuine quiet speech: it cut output
+   back to 5,269 chars.
+
+Net: **5,136 → 11,822 chars, and hallucinated "Thank you." went from 101 to 3.**
+
+Lesson for Module 6: quiet, sparse recordings exist in this corpus and their transcripts are
+thin. Enrichment must tolerate a 12k-char transcript covering 86 minutes without inventing
+substance to fill the summary.
+
+### Untranscribed gap: 32 files / 4.32 hours — 2 recovered above, 2 dropped, rest are noise
 
 24 of the 32 are under 60 seconds (mostly zero-byte or aborted taps). The real gap is four recordings:
 
-| File | Duration |
-|---|---|
-| `20251115 173129.m4a` | 87m 22s |
-| `20260112 074811-74C137FF.qta` | 86m 06s |
-| `20260617 120121.m4a` | 41m 13s |
-| `20260114 183724-4EBA4DD8.qta` | 33m 32s |
+24 of the 32 are under 60 seconds — aborted taps and zero-byte files, not worth recovering.
+The four substantial ones:
 
-Remedy: open each in the Voice Memos app to trigger on-device transcription, then re-run the
-backup. Local Whisper on just these four is the fallback.
+| File | Title | Duration | Disposition |
+|---|---|---|---|
+| `20251115 173129.m4a` | Yojin | 87m 22s | dropped |
+| `20260112 074811-74C137FF.qta` | N 73rd St 13 copy | 86m 06s | **Whisper** |
+| `20260617 120121.m4a` | Josh 2 | 41m 13s | **Whisper** |
+| `20260114 183724-4EBA4DD8.qta` | China meetings  copy | 33m 32s | dropped |
 
 ### Bearing on Module 6
 
@@ -109,6 +154,11 @@ single transcript is ~49k chars.
 - libimobiledevice v1.2.1-r1122 (win-x64) → `C:\Users\ezras\tools\libimobiledevice`, on user PATH
 - Apple Mobile Device Service: running
 - Python 3.13.3
+- Data root: `C:\Users\ezras\memo-machine-data\` — **outside OneDrive** so 65 GB of personal
+  audio never syncs to the cloud. Code lives in OneDrive; data does not.
+- Already present, no installs needed: ffmpeg, faster-whisper 1.2.1 (large-v3 cached),
+  torch 2.6.0+cu124, RTX 4080 SUPER 16 GB, `anthropic` 0.96.0, `openpyxl` 3.1.5
+- Backup: `backup\00008150-000E14480204401C\` — 29,094 files / 64.99 GB, `Backup Successful`
 
 ## Non-negotiables (from spec §4)
 
