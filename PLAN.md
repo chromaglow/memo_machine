@@ -17,9 +17,9 @@
 |---|--------|-------------|------------|--------|
 | 1 | Toolchain setup | Install libimobiledevice on Windows; verify device pairing (`ideviceinfo`). Manual/one-time, no code. | — | **done** |
 | 2 | Phase 0 gate | Pull one memo via backup, run `phase0_check_tsrp.py`. Go/no-go for the architecture. | 1 | **done — PASS** |
-| 3 | Backup extractor | `idevicebackup2` wrapper + `Manifest.db` query → `originals/` + `CloudRecordings.db`, real filenames restored. Domain discovered at runtime; prompt on encrypted backup. | 2 | — |
-| 4 | Metadata reader | `CloudRecordings.db` reader: `PRAGMA` introspection, Core Data epoch (+978307200), `date_source` fallback chain (db → m4a → mtime → unknown). | 3* | — |
-| 5 | Transcript extractor | Atom walk per file → `transcripts/<hash>.txt`; no-payload files → `needs_attention`, never halts. Reuses Phase 0 parser (handles both `.m4a` and `.qta`). Also emit word timings as JSON for v2 search. | 3* | — |
+| 3 | Backup extractor | `idevicebackup2` wrapper + `Manifest.db` query → `originals/` + `CloudRecordings.db`, real filenames restored. Domain discovered at runtime; prompt on encrypted backup. | 2 | **done — 243/243 verified** |
+| 4 | Metadata reader | `CloudRecordings.db` reader: `PRAGMA` introspection, Core Data epoch (+978307200), `date_source` fallback chain (db → m4a → mtime → unknown). | 3* | partly done inside Module 3 |
+| 5 | Transcript extractor | Atom walk per file → `transcripts/<stem>.txt` + `.words.json`; falls back to whisper output; no-payload files → `needs_attention`, never halts. | 3* | **done — 213 transcripts** |
 | 6 | Enricher | One Claude call per transcript → `enriched/<hash>.json`; hash-keyed cache, chunk-with-overlap for long transcripts, retry-once on malformed JSON. | 5 | — |
 | 7 | Output writer | Metadata + enrichment → `index.csv` → `index.xlsx`; then renamed copies into `archive/` (100-char cap, collision suffixes). Rename only rows where enrichment succeeded. | 4, 6 | — |
 | 8 | Orchestrator CLI | Single entrypoint for stages 3–7; resumable hash-keyed state, fail-loud-continue logging. The quarterly re-run command. | 3–7 | — |
@@ -148,6 +148,40 @@ The four substantial ones:
 5.78M chars ≈ 1.5M input tokens for enrichment across 211 recordings — a real cost, not the
 rounding error a 32-file corpus implied. Chunking strategy and model choice both matter; longest
 single transcript is ~49k chars.
+
+## Modules 3 & 5 results (2026-07-27) — archive complete and verified
+
+`extract_recordings.py` → `extract_transcripts.py` → `build_library.py`.
+
+| Check | Result |
+|---|---|
+| Recordings in phone DB | 243 |
+| Extracted and SHA-256 verified | **243 / 243**, 0 failures |
+| Missing from archive | **none** |
+| Decodable by ffprobe, duration matching DB | **243 / 243** |
+| Independent re-hash from `library/` | 6 / 6 sampled OK |
+| Transcripts | **213** (211 Apple-embedded, 2 Whisper) |
+| Byte-identical duplicate recordings | 0 |
+
+`library/` holds all 243 recordings hard-linked beside their 213 transcripts, plus
+`_index.csv` and `_README.txt`. Hard links mean it occupies **no additional disk** —
+`library/` and `originals/` are the same bytes under two names.
+
+Without a transcript: 30 recordings, 131.7 min total — 24 are under 60 seconds
+(aborted taps, near-empty files); the rest are Yojin (87m) and China meetings (33m),
+both dropped by Ezra's decision.
+
+### Disk
+
+| Path | Size | Note |
+|---|---|---|
+| `backup/` | 64.99 GB | **deletable** once the archive is verified — it is |
+| `originals/` | 30.12 GiB | the keeper: independent verified copy |
+| `library/` | 30.13 GiB apparent | hard links, costs nothing extra |
+| `transcripts/` | 0.03 GB | |
+
+Deleting `backup/` frees ~65 GB. Deleting the recordings from the phone frees ~30 GB there.
+Per spec §4, this tool never deletes from the phone — that stays a manual, deliberate act.
 
 ## Environment
 
