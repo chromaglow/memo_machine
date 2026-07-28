@@ -84,9 +84,12 @@ PAGE = """<!doctype html>
     font:13.5px/1.65 ui-monospace,"Cascadia Code",Consolas,monospace; margin:0; }
   mark { background:var(--mark); color:inherit; padding:0 1px; border-radius:2px; }
   .none { text-align:center; color:var(--muted); padding:60px 0; }
+  .banner { background:var(--accent); color:#fff; padding:8px 20px; font-size:13px;
+    text-align:center; letter-spacing:.02em; }
 </style>
 </head>
 <body>
+__BANNER__
 <header>
   <h1>Voice Memo Archive</h1>
   <div class="sub">__SUB__</div>
@@ -260,7 +263,8 @@ def main() -> int:
            f"{len([r for r in records if r['tx']])} transcripts · "
            f"{chars:,} characters searchable · click a row to expand")
 
-    page = (PAGE.replace("__SUB__", html.escape(sub))
+    page = (PAGE.replace("__BANNER__", "")
+                .replace("__SUB__", html.escape(sub))
                 .replace("__DATA__", json.dumps(records, ensure_ascii=False)))
     out = data / "browse.html"
     out.write_text(page, encoding="utf-8")

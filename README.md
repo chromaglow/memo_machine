@@ -59,6 +59,7 @@ Metadata lives in a ~2 MB `moov` box while audio runs to 276 MB per file, so the
 | `build_index.py` | Builds `index.csv` / `index.xlsx` and renames the archive. |
 | `classify_topic.py` | Sorts recordings into topic subfolders from their summaries. |
 | `build_browser.py` | Builds `browse.html` — every recording and transcript in one searchable page. |
+| `build_demo.py` | Builds `demo.html` — the same interface driven by invented data, safe to show or send. |
 
 Every stage is idempotent and keyed on the audio file's SHA-256, so re-running never duplicates work or re-spends on API calls.
 
@@ -114,6 +115,8 @@ C:\Users\ezras\memo-machine-data\
 **`browse.html`** — a single 12.6 MB page holding all 243 recordings and the full text of all 213 transcripts. Search runs over metadata *and* every transcript at once, so a phrase buried 30,000 characters into a call is findable; matches are highlighted and the transcript excerpt is centred on the first hit rather than starting at the top. Folder and category filters compose with search. Audio plays inline. No server, no internet — just open the file.
 
 The spreadsheet is better for sorting and bulk scanning; the page is better for reading and for finding a half-remembered phrase.
+
+**`demo.html`** — the same interface with entirely invented recordings, for showing the tool without showing the contents. It imports the template from `build_browser.py`, so the demo cannot drift from the real thing. Audio is an embedded silent clip, so the player is genuinely functional rather than a picture of one, and there are no `file://` links to break on someone else's machine. A banner marks it as synthetic.
 
 Filenames follow `YYYY-MM-DD_HHMM_category_slug_participants.ext`:
 
