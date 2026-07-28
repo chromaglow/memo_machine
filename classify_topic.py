@@ -48,6 +48,29 @@ TOPICS = {
             "Amazon employment."
         ),
     },
+    "venture": {
+        "include": (
+            "The recording concerns the owner's own venture business rather than "
+            "his employer. That covers QED (the company being incorporated) and "
+            "its C-corp formation, operating agreements, cap table, equity splits "
+            "and legal setup; the products — Hard Shell / hardshell.app, Stream "
+            "Kinetics, Scout, Todd Toolkit, Omega, synapse patterns and the "
+            "marketplace plugin work; client and prospect engagements run through "
+            "that business, including DADS, United Way, Seattle Unity, Endo DNA, "
+            "Empty Throne Games, church software and nonprofit discovery calls; "
+            "Techline Ventures; investor, funding, runway and Mercury banking "
+            "conversations; board meetings, board demos and pitch preparation; "
+            "and product, dev-environment, sprint and go-to-market working "
+            "sessions with the venture collaborators — Josh, Aaron, Paul and "
+            "others in that group."
+        ),
+        "exclude": (
+            "Work belonging to the owner's Amazon employment (AHT, MFI, AIS, "
+            "Paragon, associates, promotion and org matters), interviews for "
+            "jobs at other companies, and purely personal or social conversations "
+            "with no business content."
+        ),
+    },
 }
 
 SCHEMA = {
@@ -166,17 +189,35 @@ def main() -> int:
         return 0
 
     dest.mkdir(parents=True, exist_ok=True)
-    moved = 0
+    library = data / "library"
+    moved, elsewhere, missing = 0, [], []
     for _, row, _v in hits:
         name = names.get(row["_hash"])
         if not name:
             continue
+        if not (library / name).exists():
+            # A recording can belong to more than one topic. Whichever folder
+            # claimed it first keeps it — report rather than silently counting
+            # it as moved.
+            found = next((p for p in library.glob(f"*/{name}")), None)
+            (elsewhere if found else missing).append(
+                f"{name}  (in {found.parent.name}/)" if found else name)
+            continue
         for candidate in (name, Path(name).stem + ".txt"):
-            src = data / "library" / candidate
+            src = library / candidate
             if src.exists():
                 shutil.move(str(src), str(dest / candidate))
         moved += 1
+
     print(f"\nmoved {moved} recordings (audio + transcript) into library/{args.folder}/")
+    if elsewhere:
+        print(f"already filed under another topic, left in place ({len(elsewhere)}):")
+        for n in elsewhere:
+            print(f"  {n}")
+    if missing:
+        print(f"NOT FOUND ({len(missing)}):")
+        for n in missing:
+            print(f"  {n}")
     return 0
 
 
