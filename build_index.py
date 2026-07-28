@@ -254,6 +254,30 @@ def write_xlsx(data: Path, rows: list) -> Path:
     wrap = {"topic", "summary", "action_items", "flags", "title"}
     for row in rows:
         ws.append([row.get(c, "") for c in COLUMNS])
+
+    # Make the sheet clickable: the title opens the transcript, the filename
+    # opens the audio. Absolute paths — Excel resolves relative links against
+    # the workbook's own location, which breaks the moment the file is moved.
+    library = data / "library"
+    link_font = Font(color="0563C1", underline="single")
+    col_title = COLUMNS.index("title") + 1
+    col_file = COLUMNS.index("archive_filename") + 1
+    linked = 0
+    for i, row in enumerate(rows, start=2):
+        name = row["archive_filename"]
+        found = locate(library, name)
+        if found is None:
+            continue
+        transcript = found.parent / (Path(name).stem + ".txt")
+        if transcript.exists():
+            cell = ws.cell(row=i, column=col_title)
+            cell.hyperlink = transcript.as_uri()
+            cell.font = link_font
+            linked += 1
+        audio = ws.cell(row=i, column=col_file)
+        audio.hyperlink = found.as_uri()
+        audio.font = link_font
+    print(f"  linked {linked} transcripts and {len(rows)} audio files")
     for i, name in enumerate(COLUMNS, start=1):
         letter = get_column_letter(i)
         ws.column_dimensions[letter].width = widths.get(name, 18)
@@ -328,6 +352,14 @@ def write_about_sheet(wb, rows: list) -> None:
     for name, description in FOLDER_NOTES:
         count = folders.get(name if name != "(root)" else "(root)", 0)
         add_pair(f"{name}  ({count})", description)
+    add()
+
+    add("Clicking through to the files", head_font)
+    add("The title in each row is a link that opens that recording's transcript. "
+        "The archive_filename is a link that opens the audio. Excel may ask you to "
+        "confirm the first time — these point at files on this machine, not the "
+        "web. For searching across every transcript at once, open browse.html "
+        "instead; it has the full text of all 213 in one page.", wrap=True)
     add()
 
     add("Columns", head_font)

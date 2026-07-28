@@ -56,6 +56,7 @@ Metadata lives in a ~2 MB `moov` box while audio runs to 276 MB per file, so the
 | `enrich.py` | One Claude call per transcript → structured metadata. Batch API, hash-keyed cache. |
 | `build_index.py` | Builds `index.csv` / `index.xlsx` and renames the archive. |
 | `classify_topic.py` | Sorts recordings into topic subfolders from their summaries. |
+| `build_browser.py` | Builds `browse.html` — every recording and transcript in one searchable page. |
 
 Every stage is idempotent and keyed on the audio file's SHA-256, so re-running never duplicates work or re-spends on API calls.
 
@@ -100,8 +101,17 @@ C:\Users\ezras\memo-machine-data\
 ├── enriched\            213   structured metadata, one JSON per recording
 ├── index.csv                  source of truth
 ├── index.xlsx                 formatted, with an About sheet
+├── browse.html                searchable single-page browser
 └── inventory.csv              every file + SHA-256
 ```
+
+### Two ways to read it
+
+**`index.xlsx`** — sort, filter and scan. Each row's **title links to its transcript** and the **filename links to the audio**, so a promising row is one click from the file. A second *About* sheet explains provenance, folders, every column and the caveats.
+
+**`browse.html`** — a single 12.6 MB page holding all 243 recordings and the full text of all 213 transcripts. Search runs over metadata *and* every transcript at once, so a phrase buried 30,000 characters into a call is findable; matches are highlighted and the transcript excerpt is centred on the first hit rather than starting at the top. Folder and category filters compose with search. Audio plays inline. No server, no internet — just open the file.
+
+The spreadsheet is better for sorting and bulk scanning; the page is better for reading and for finding a half-remembered phrase.
 
 Filenames follow `YYYY-MM-DD_HHMM_category_slug_participants.ext`:
 
